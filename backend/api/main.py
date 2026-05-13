@@ -395,8 +395,8 @@ async def login(request : Request,data : LoginSchema, Session : str = Cookie(Non
 
             await conn.execute("""
                 INSERT INTO user_sessions (id, userid, expires_at, location, user_agent)
-                VALUES ($1, $2, $3)
-            """, SessionId, user["id"], Expiration,Location,UserAgent)
+                VALUES ($1, $2, NOW() + INTERVAL '365 days', $3, $4)
+            """, SessionId, user["id"], Location, UserAgent)
 
             return setUserSession(serializer,user["id"],Username)
     
