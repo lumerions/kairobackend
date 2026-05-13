@@ -4,7 +4,10 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from lib.getPostgresConn import *
 from middleware.authMiddleware import *
-from slowapi.util import get_remote_address
+from typing import Optional
+from lib.dragonflydb import *
+import httpx
+client = httpx.AsyncClient(timeout = 5)
 
 Ph = PasswordHasher()
 
@@ -42,15 +45,26 @@ def setUserSession(serializer,UserId,Username):
         value = CookieValue,
         max_age = 63072000,
         httponly = True,
-        secure =True,
+        secure = True,
         samesite = "Strict"
     )
 
     return response
 
+def getUserIP(request: Request):
+    ip = request.headers.get("cf-connecting-ip")
+    if ip:
+        return ip
+    
+    xss = request.headers.get("x-forwarded-for")
+    if xss:
+        return xss.split(",")[0].strip()
+    
+    return request.client.host
+
 async def getSessionKey(request : Request,serializer) -> str:
     Session = request.cookies.get("Session")
-    ip = get_remote_address(request)
+    ip = getUserIP(request)
 
     if not Session:
         return f"ip{ip}"
@@ -60,7 +74,7 @@ async def getSessionKey(request : Request,serializer) -> str:
     else:
         return f"Session{Session}"
     
-def returnSerializedCookieData(Session,serializer) -> list:
+def returnSerializedCookieData(Session,serializer) -> Optional[list]:
     try:
         serializedData = serializer.loads(Session)
         UserId = int(serializedData.get("userId"))
@@ -73,35 +87,66 @@ def returnSerializedCookieData(Session,serializer) -> list:
     
     return [UserId,Version]
 
-async def getInventoryData(UserId : int) -> int:
+
+async def clearCookies(response):
+    response.delete_cookie(key = "Session", path = "/")
+    response.delete_cookie(key = "csrf", path = "/")
+    return response
+
+async def getIPData(IP):
+    url = f"https://ipapi.co/{IP}/json/"
+    response = await client.get(url) 
+    response.raise_for_status()
+    return response.json()
+
+async def getInventoryData(UserId : int) -> list:
     pool = await getpgPool()
     async with pool.acquire() as conn:
-        return await conn.fetchval(
+        items = await conn.fetchval(
             "SELECT items FROM users WHERE id = $1",
             UserId
-        )
-
-async def getFriendCount(UserId : int) -> int:
+        ) or []
+        return items
+    
+async def getBalance(UserId : int) -> Optional[int]:
     pool = await getpgPool()
     async with pool.acquire() as conn:
         return await conn.fetchval(
-            "SELECT friendrequestscount FROM users WHERE id = $1",
-            UserId
-        )
-
-async def getMessagesCount(UserId : int) -> int:
-    pool = await getpgPool()
-    async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT messagescount FROM users WHERE id = $1",
+            "SELECT robux FROM balances WHERE userid = $1",
             UserId
         )
     
-async def getTradesCount(UserId : int) -> int:
+async def getUsernameByUserId(UserId : int) -> Optional[str]:
+    dragonfly = await getDragonfly()
+    dragonFlyUsername = await dragonfly.get(str(UserId))
+
+    if dragonFlyUsername:
+        return dragonFlyUsername
+    
     pool = await getpgPool()
     async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT tradescount FROM users WHERE id = $1",
+        username = await conn.fetchval(
+            "SELECT username FROM users WHERE id = $1",
             UserId
         )
+    
+        await dragonfly.set(str(UserId),username,ex = 86400)
+
+    
+async def getUserIdByUsername(UserName : str)  -> Optional[str]:
+    dragonfly = await getDragonfly()
+    dragonFlyUserId = await dragonfly.get(UserName)
+
+    if dragonFlyUserId:
+        return dragonFlyUserId
+
+    pool = await getpgPool()
+    async with pool.acquire() as conn:
+        UserId = await conn.fetchval(
+            "SELECT id FROM users WHERE username = $1",
+            UserName
+        )
+
+        await dragonfly.set(UserName,UserId,ex = 86400)
+        return UserId
     

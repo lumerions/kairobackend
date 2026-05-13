@@ -21,7 +21,8 @@ def setCsrf(response,UserId : int):
         value = generateNewCsrf(UserId),
         max_age = 604800,
         httponly = False, 
-        samesite = "strict",
+        secure = False,
+        samesite = "Strict",
         path = "/"
     )
 
@@ -32,20 +33,22 @@ async def CheckCSRFToken(request: Request,x_csrf_token: str = Header(None), csrf
         if not csrf:
             raise ValueError("No CSRF cookie")
 
+        HeaderData = serializer.loads(x_csrf_token)
+        HeaderCSRF = str(HeaderData.get("csrf"))
         serializedSessionData = serializer.loads(Session)
         serializedCSRFData = serializer.loads(csrf)
         UserId = int(serializedSessionData.get("userId"))
-        CsrfToken = serializedCSRFData.get("csrf")
-        CsrfUserId = serializedCSRFData.get("userId")
+        CsrfToken = str(serializedCSRFData.get("csrf"))
+        CsrfUserId = int(serializedCSRFData.get("userId"))
 
-        if not x_csrf_token or x_csrf_token != CsrfToken or UserId != CsrfUserId:
+        if not HeaderCSRF or HeaderCSRF != CsrfToken or UserId != CsrfUserId:
             raise ValueError("Validation mismatch")
     
     except (BadSignature,SignatureExpired,ValueError,TypeError):    
         CSRFToken = generateNewCsrf(UserId)
-        CookieHeader = f"csrf={CSRFToken}; Max-Age=604800; Path=/; SameSite=Strict; HttpOnly"
+        CookieHeader = f"csrf={CSRFToken}; Max-Age=604800; Path=/; SameSite=Strict"
         raise HTTPException(
-            status_code = 403,
+            status_code = 401,
             detail = "Token Validation Error.",
             headers = {
                 "Set-Cookie":CookieHeader
